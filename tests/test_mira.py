@@ -261,7 +261,7 @@ def test_mira_identity_is_stable_for_text_and_voice_bootstrap_without_provider(t
         assert voice["persona"]["fictional_age"] == 32
         assert "Challenge claims" in voice["persona"]["principles"][0]
         assert "no conversation model is connected yet" in text["introduction"]
-        assert voice["voice_transport"] == "not_implemented"
+        assert voice["voice_transport"] == "disabled"
         assert client.get("/v1/identity?channel=voice").status_code == 401
 
         # The fixed identity answer works even before a model is configured and
@@ -282,6 +282,94 @@ def test_chat_passes_identity_contract_to_model(tmp_path):
     assert identity["persona"]["identity"].startswith("playful intellectual")
     assert len(identity["persona"]["principles"]) == 5
     assert identity["personality"]["parameters"]["academic_collaboration"] == 0.9
+
+
+def test_realtime_voice_credentials_are_owner_only_and_never_expose_api_key(tmp_path, monkeypatch):
+    original = httpx.AsyncClient
+
+    def handle(request):
+        assert request.url == "https://api.openai.com/v1/realtime/client_secrets"
+        assert request.headers["Authorization"] == "Bearer test-api-secret"
+        assert len(request.headers["OpenAI-Safety-Identifier"]) == 64
+        body = json.loads(request.content)
+        assert body["expires_after"] == {"anchor": "created_at", "seconds": 60}
+        session = body["session"]
+        assert session["type"] == "realtime"
+        assert session["model"] == "gpt-realtime-2.1-mini"
+        assert session["audio"]["output"]["voice"] == "marin"
+        assert session["output_modalities"] == ["audio"]
+        assert session["max_output_tokens"] == 256
+        assert session["tool_choice"] == "none" and session["tools"] == []
+        assert "not a temporary nickname" in session["instructions"]
+        assert "fictional_age" in session["instructions"]
+        assert "Challenge claims" in session["instructions"]
+        return httpx.Response(200, json={"value": "ek_synthetic", "expires_at": 2_000_000_000})
+
+    def mock_client(**kwargs):
+        if "transport" in kwargs:  # Leave the in-process test client untouched.
+            return original(**kwargs)
+        return original(transport=httpx.MockTransport(handle), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+    settings = Settings(
+        "a" * 32, tmp_path / "db", linda_token="b" * 32,
+        openai_key="test-api-secret", realtime_enabled=True
+    )
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/v1/realtime/client-secret").status_code == 401
+        response = client.post("/v1/realtime/client-secret", headers=LINDA)
+        assert response.status_code == 403
+        response = client.post("/v1/realtime/client-secret", headers=OWNER)
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.json() == {
+            "value": "ek_synthetic", "expires_at": 2_000_000_000,
+            "model": "gpt-realtime-2.1-mini", "voice": "marin",
+        }
+        assert "test-api-secret" not in response.text
+        assert "instructions" not in response.json()
+        identity = client.get("/v1/identity?channel=voice", headers=OWNER).json()
+        assert identity["provider"] == "openai"
+        assert identity["provider_configured"] is True
+        assert identity["voice_transport"] == "openai-realtime-webrtc"
+
+
+def test_realtime_voice_is_disabled_by_default_and_redacts_provider_error(tmp_path, monkeypatch):
+    with TestClient(create_app(Settings("a" * 32, tmp_path / "db", openai_key="configured"))) as client:
+        assert client.post("/v1/realtime/client-secret", headers=OWNER).status_code == 503
+
+    original = httpx.AsyncClient
+
+    def handle(_request):
+        return httpx.Response(500, text="provider body with sensitive details")
+
+    def mock_client(**kwargs):
+        if "transport" in kwargs:
+            return original(**kwargs)
+        return original(transport=httpx.MockTransport(handle), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+    settings = Settings(
+        "a" * 32, tmp_path / "db", openai_key="configured", realtime_enabled=True
+    )
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/v1/realtime/client-secret", headers=OWNER)
+        assert response.status_code == 502
+        assert "sensitive" not in response.text
+
+
+def test_dedicated_voice_page_is_local_and_does_not_persist_credentials_or_transcripts(tmp_path):
+    with TestClient(create_app(Settings("a" * 32, tmp_path / "db"))) as client:
+        page = client.get("/voice")
+        script = client.get("/voice.js")
+        assert page.status_code == 200
+        assert script.status_code == 200
+        assert "Start Mira voice" in page.text
+        assert "cache-control" not in page.headers or page.headers["cache-control"] == "no-store"
+        assert "localStorage" not in script.text
+        assert "sessionStorage" not in script.text
+        assert "10 * 60 * 1000" in script.text
+        assert "response.output_audio_transcript.done" in script.text
 
 
 def test_synthetic_evaluation():

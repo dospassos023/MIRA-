@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
+import hashlib
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,62 @@ class Provider(Protocol):
 
 class ProviderError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class RealtimeClientSecret:
+    value: str
+    expires_at: int
+
+
+class RealtimeProvider:
+    """Mints short-lived browser credentials without exposing the API key."""
+
+    endpoint = "https://api.openai.com/v1/realtime/client_secrets"
+
+    def __init__(self, api_key: str, model: str, voice: str = "marin"):
+        self.api_key = api_key
+        self.model = model
+        self.voice = voice
+
+    async def create_client_secret(self, instructions: str, owner_token: str) -> RealtimeClientSecret:
+        safety_id = hashlib.sha256(("mira-owner:" + owner_token).encode()).hexdigest()
+        payload = {
+            "expires_after": {"anchor": "created_at", "seconds": 60},
+            "session": {
+                "type": "realtime",
+                "model": self.model,
+                "instructions": instructions,
+                "output_modalities": ["audio"],
+                "max_output_tokens": 256,
+                "tool_choice": "none",
+                "tools": [],
+                "audio": {"output": {"voice": self.voice}},
+            },
+        }
+        try:
+            async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
+                response = await client.post(
+                    self.endpoint,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "OpenAI-Safety-Identifier": safety_id,
+                    },
+                )
+                response.raise_for_status()
+            data = response.json()
+            value = data["value"]
+            expires_at = data["expires_at"]
+            if (
+                not isinstance(value, str) or not value.startswith("ek_")
+                or len(value) > 512 or not value.isascii()
+                or type(expires_at) is not int or expires_at <= 0
+            ):
+                raise ValueError("Invalid client secret response")
+            return RealtimeClientSecret(value=value, expires_at=expires_at)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+            raise ProviderError("Realtime client credential request failed") from None
 
 
 class ChatProvider:

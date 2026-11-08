@@ -13,7 +13,7 @@ experimental = ["numpy>=2.2,<3", "scipy>=1.15,<2"]
 test = ["pytest>=8,<10"]
 
 [tool.setuptools.package-data]
-mira = ["personality.json", "persona.json", "migrations/*.sql", "eval_cases.json"]
+mira = ["personality.json", "persona.json", "voice.html", "voice.js", "migrations/*.sql", "eval_cases.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

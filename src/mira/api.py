@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import Settings
@@ -14,9 +14,9 @@ from .chat import ChatSessions
 from .cognitive import CognitiveEngine, Step
 from .executive import ApprovalRequest, Executive, TaskRequest, Tool
 from .memory import Conflict, Memory
-from .identity import IDENTITY, asks_identity, introduction
+from .identity import IDENTITY, asks_identity, introduction, realtime_instructions
 from .policy import PERSONALITY, PERSONA, authorized, baseline, identity_profile
-from .providers import Provider, ProviderError
+from .providers import Provider, ProviderError, RealtimeProvider
 from .schemas import Action, Context, Key, MemoryInput, Observation, Operation, ProfileImport, Review, Schema, Value
 
 
@@ -62,6 +62,13 @@ def create_app(
     async def prevent_caching(request: Request, call_next):
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' https://api.openai.com; media-src 'self' blob:; "
+            "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        )
         return response
 
     @app.exception_handler(RequestValidationError)
@@ -121,6 +128,7 @@ def create_app(
             "registered_tools": sorted((tools or {}).keys()),
             "linda": "pending_unverified",
             "tool_execution_available": bool(tools),
+            "voice": "openai_realtime_webrtc" if settings.realtime_enabled else "disabled",
         }
 
     @app.get("/v1/personality", dependencies=[Depends(role)])
@@ -130,14 +138,53 @@ def create_app(
     @app.get("/v1/identity", dependencies=[Depends(owner)])
     def identity(channel: Literal["text", "voice"] = "text"):
         """Identity bootstrap for text and dedicated voice clients; no model call."""
+        voice_ready = settings.realtime_enabled and settings.openai_key is not None
+        selected_provider = (
+            "openai" if channel == "voice" and voice_ready else settings.provider
+        )
         return {
             "name": "Mira", "channel": channel, "identity_contract": IDENTITY,
-            "introduction": introduction(settings.provider),
+            "introduction": introduction(selected_provider),
             "persona": PERSONA.model_dump(), "personality": PERSONALITY.model_dump(),
-            "provider": settings.provider,
-            "provider_configured": provider is not None,
-            "voice_transport": "not_implemented",
+            "provider": selected_provider,
+            "provider_configured": voice_ready if channel == "voice" else provider is not None,
+            "voice_transport": "openai-realtime-webrtc" if voice_ready else "disabled",
         }
+
+    @app.get("/voice", include_in_schema=False)
+    def voice_page():
+        """A local dedicated Mira voice UI; activation is explicitly opt-in."""
+        from importlib.resources import files
+
+        return HTMLResponse(files("mira").joinpath("voice.html").read_text(encoding="utf-8"))
+
+    @app.get("/voice.js", include_in_schema=False)
+    def voice_script():
+        from importlib.resources import files
+
+        return Response(
+            files("mira").joinpath("voice.js").read_text(encoding="utf-8"),
+            media_type="text/javascript",
+        )
+
+    @app.post("/v1/realtime/client-secret", dependencies=[Depends(owner)])
+    async def realtime_client_secret():
+        """Mint a 60-second Realtime credential for the owner-operated voice page."""
+        if not settings.realtime_enabled or not settings.openai_key:
+            raise HTTPException(503, "Dedicated voice is disabled or not configured")
+        instructions = realtime_instructions(
+            identity_profile(), introduction("openai")
+        )
+        try:
+            secret = await RealtimeProvider(
+                settings.openai_key, settings.realtime_model, settings.realtime_voice
+            ).create_client_secret(instructions, settings.owner_token)
+        except ProviderError:
+            raise HTTPException(502, "Could not prepare a dedicated voice session") from None
+        return JSONResponse({
+            "value": secret.value, "expires_at": secret.expires_at,
+            "model": settings.realtime_model, "voice": settings.realtime_voice,
+        }, headers={"Cache-Control": "no-store"})
 
     @app.post("/v1/policy", dependencies=[Depends(role)])
     def policy(context: Context):

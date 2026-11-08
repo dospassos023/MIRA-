@@ -15,6 +15,9 @@ class Settings:
     model: str | None = None
     ollama_url: str = "http://127.0.0.1:11434"
     openai_key: str | None = field(default=None, repr=False)
+    realtime_enabled: bool = False
+    realtime_model: str = "gpt-realtime-2.1-mini"
+    realtime_voice: str = "marin"
 
     def __post_init__(self):
         tokens = [t for t in (self.owner_token, self.linda_token) if t is not None]
@@ -28,6 +31,15 @@ class Settings:
             raise ValueError("Set MIRA_MODEL for the selected provider")
         if self.provider == "openai" and not self.openai_key:
             raise ValueError("Set OPENAI_API_KEY for OpenAI")
+        if self.realtime_enabled and not self.openai_key:
+            raise ValueError("Set OPENAI_API_KEY before enabling dedicated voice")
+        if self.realtime_model not in {"gpt-realtime-2.1-mini", "gpt-realtime-2.1"}:
+            raise ValueError("Unsupported MIRA_REALTIME_MODEL")
+        if self.realtime_voice not in {
+            "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer",
+            "verse", "marin", "cedar",
+        }:
+            raise ValueError("Unsupported MIRA_REALTIME_VOICE")
         if self.provider == "ollama":
             url = urlsplit(self.ollama_url)
             if (
@@ -41,6 +53,9 @@ class Settings:
 
     @classmethod
     def from_env(cls):
+        realtime_enabled = os.getenv("MIRA_REALTIME_ENABLED", "false").lower()
+        if realtime_enabled not in {"true", "false", "1", "0", "yes", "no"}:
+            raise ValueError("MIRA_REALTIME_ENABLED must be true or false")
         return cls(
             owner_token=os.getenv("MIRA_OWNER_TOKEN", ""),
             linda_token=os.getenv("MIRA_LINDA_TOKEN"),
@@ -49,6 +64,9 @@ class Settings:
             model=os.getenv("MIRA_MODEL"),
             ollama_url=os.getenv("MIRA_OLLAMA_URL", "http://127.0.0.1:11434"),
             openai_key=os.getenv("OPENAI_API_KEY"),
+            realtime_enabled=realtime_enabled in {"true", "1", "yes"},
+            realtime_model=os.getenv("MIRA_REALTIME_MODEL", "gpt-realtime-2.1-mini"),
+            realtime_voice=os.getenv("MIRA_REALTIME_VOICE", "marin"),
         )
 
     def build_provider(self):
