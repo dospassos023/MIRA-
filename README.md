@@ -62,4 +62,4 @@ The `/v1/chat` endpoint and `python -m mira` provide persistent local conversati
 
 Run `python -m mira.sandbox` for the offline research pipeline benchmark. Mira diagnoses a broken index, executes an authorized repair, verifies the outcome, and rejects an unregistered upload. See the [Executive Runtime contract](docs/executive-runtime.md) for task endpoints and adapter permissions.
 
-Use a regular local install (shown above) from a checkout under Desktop; macOS may skip setuptools editable-install path files there. No `PYTHONPATH` override is needed.
+The installation commands above work from a regular local checkout without a `PYTHONPATH` override.

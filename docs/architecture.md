@@ -1,8 +1,8 @@
 # Architecture decisions and calibration roadmap
 
-## Repository and environment
+## Integration status
 
-Mira's GitHub default branch at `f61fe1e` contained an initial README only. There were no Python packages, services, migrations, authentication conventions, configuration files, tests, or Linda integration code to preserve. The local checkout is on macOS x86_64 with Python 3.14.7. The Linda connector exposed a health probe, which returned gateway error 1033 during this work. Its historical stack and live API contracts are unverified. No Linda code or configuration was changed.
+MIRA is a standalone local service. No Linda OS connection or external action adapter is configured or verified. See [Linda contract](linda-contract.md) for the proposed integration boundary.
 
 ## ADR 001. Version identity and isolate behavioral policy
 

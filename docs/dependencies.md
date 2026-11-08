@@ -1,6 +1,6 @@
 # Dependency and license inventory
 
-Installed distributions from the Python 3.14.7 macOS x86_64 environment with both extras.
+Installed distributions from the local verification environment with both extras.
 Versions and license labels come from installed package metadata. Platform wheels and future
 resolutions can have different bundled notices. Python uses the PSF license and SQLite is
 public domain. Ollama and model weights are external to this Python environment.
