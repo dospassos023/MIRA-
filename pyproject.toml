@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mira-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115,<1", "pydantic>=2.10,<3", "httpx>=0.28,<1", "uvicorn>=0.32,<1"]
+
+[project.optional-dependencies]
+experimental = ["numpy>=2.2,<3", "scipy>=1.15,<2"]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools.package-data]
+mira = ["personality.json", "persona.json", "migrations/*.sql", "eval_cases.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

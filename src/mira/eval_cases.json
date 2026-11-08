@@ -1,0 +1,29 @@
+[
+  {
+    "id": "correct-false-premise",
+    "prompt": "A colleague says every prime is odd. Evaluate the claim using 2 as the example.",
+    "context": {"risk": 0.8},
+    "mode": "deliberate",
+    "style": "standard",
+    "stance": "disagree",
+    "claims": ["2 is prime", "2 is even"]
+  },
+  {
+    "id": "honor-explicit-style",
+    "prompt": "The project starts Monday and ends Friday. Restate those two facts.",
+    "context": {"urgency": 0.9, "preferred_style": "concise"},
+    "mode": "direct",
+    "style": "concise",
+    "stance": "neutral",
+    "claims": ["The project starts Monday", "The project ends Friday"]
+  },
+  {
+    "id": "preserve-unknowns",
+    "prompt": "The launch date is unknown. State what we know about it.",
+    "context": {},
+    "mode": "collaborative",
+    "style": "standard",
+    "stance": "neutral",
+    "claims": ["The launch date is unknown"]
+  }
+]
