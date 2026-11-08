@@ -13,15 +13,15 @@ let microphone = null;
 let channel = null;
 let sessionTimer = null;
 let totalTokens = 0;
-let closing = false;
+let sessionController = null;
 
 function setStatus(message) {
   statusLine.textContent = message;
 }
 
 function stopSession(message = "Disconnected") {
-  if (closing) return;
-  closing = true;
+  sessionController?.abort();
+  sessionController = null;
   window.clearTimeout(sessionTimer);
   sessionTimer = null;
   if (channel && channel.readyState !== "closed") channel.close();
@@ -34,74 +34,108 @@ function stopSession(message = "Disconnected") {
   startButton.disabled = false;
   stopButton.disabled = true;
   setStatus(message);
-  closing = false;
 }
 
-function showError(message) {
-  transcriptBox.textContent = message;
+function requireVoiceResponse(response) {
+  if (response.ok) return;
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("The MIRA owner token was not accepted.");
+  }
+  if (response.status === 503) {
+    throw new Error("Dedicated voice is not enabled on this MIRA server yet.");
+  }
+  throw new Error("MIRA could not prepare the voice session.");
 }
 
 async function startSession() {
+  if (sessionController) return;
+  sessionController = new AbortController();
+  const { signal } = sessionController;
   startButton.disabled = true;
   stopButton.disabled = false;
   transcriptBox.textContent = "";
   totalTokens = 0;
   usageLine.textContent = "Session token usage: 0";
-  setStatus("Preparing a short-lived voice connection…");
+  setStatus("Checking voice availability…");
 
-  let ownerToken = tokenInput.value.trim();
+  const ownerToken = tokenInput.value.trim();
   tokenInput.value = "";
-  let ephemeralKey = "";
   try {
     if (!ownerToken) throw new Error("Enter your MIRA owner token first.");
+    const identityResponse = await fetch("/v1/identity?channel=voice", {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+      cache: "no-store",
+      signal,
+    });
+    signal.throwIfAborted();
+    requireVoiceResponse(identityResponse);
+    const identity = await identityResponse.json();
+    signal.throwIfAborted();
+    if (identity.voice_transport !== "openai-realtime-webrtc") {
+      throw new Error("Dedicated voice is not enabled on this MIRA server yet.");
+    }
+
+    setStatus("Waiting for microphone permission…");
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (signal.aborted) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    microphone = stream;
+    const connection = new RTCPeerConnection();
+    peer = connection;
+    connection.ontrack = (event) => {
+      if (signal.aborted) return;
+      speaker.srcObject = event.streams[0];
+      speaker.play().catch(() => {
+        if (!signal.aborted) setStatus("Connected. Press Play to hear Mira.");
+      });
+    };
+    connection.onconnectionstatechange = () => {
+      if (!signal.aborted && ["failed", "closed", "disconnected"].includes(connection.connectionState)) {
+        stopSession("Voice connection ended.");
+      }
+    };
+    stream.getTracks().forEach((track) => connection.addTrack(track, stream));
+    const events = connection.createDataChannel("mira-events");
+    channel = events;
+
+    const offer = await connection.createOffer();
+    signal.throwIfAborted();
+    await connection.setLocalDescription(offer);
+    signal.throwIfAborted();
+    setStatus("Preparing a short-lived voice connection…");
     const secretResponse = await fetch("/v1/realtime/client-secret", {
       method: "POST",
       headers: { Authorization: `Bearer ${ownerToken}` },
       cache: "no-store",
+      signal,
     });
-    ownerToken = "";
-    if (!secretResponse.ok) {
-      const detail = secretResponse.status === 503
-        ? "Dedicated voice is not enabled on this MIRA server yet."
-        : secretResponse.status === 401 || secretResponse.status === 403
-          ? "The MIRA owner token was not accepted."
-          : "MIRA could not prepare the voice session.";
-      throw new Error(detail);
-    }
-    const secret = await secretResponse.json();
-    ephemeralKey = secret.value;
+    signal.throwIfAborted();
+    requireVoiceResponse(secretResponse);
+    const { value: ephemeralKey, model, voice } = await secretResponse.json();
+    signal.throwIfAborted();
     if (typeof ephemeralKey !== "string" || !ephemeralKey.startsWith("ek_")) {
       throw new Error("MIRA received an invalid temporary voice credential.");
     }
 
-    microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
-    peer = new RTCPeerConnection();
-    peer.ontrack = (event) => {
-      speaker.srcObject = event.streams[0];
-      speaker.play().catch(() => setStatus("Connected. Press Play to hear Mira."));
-    };
-    peer.onconnectionstatechange = () => {
-      if (peer && ["failed", "closed", "disconnected"].includes(peer.connectionState)) {
-        stopSession("Voice connection ended.");
-      }
-    };
-    microphone.getTracks().forEach((track) => peer.addTrack(track, microphone));
-    channel = peer.createDataChannel("mira-events");
-    channel.onopen = () => {
-      setStatus(`Connected to Mira · ${secret.model} · ${secret.voice}`);
-      channel.send(JSON.stringify({
+    events.onopen = () => {
+      if (signal.aborted) return;
+      setStatus(`Connected to Mira · ${model} · ${voice}`);
+      events.send(JSON.stringify({
         type: "conversation.item.create",
         item: { type: "message", role: "user", content: [{
           type: "input_text",
           text: "Welcome me now with the brief truthful Mira introduction from your system instructions.",
         }] },
       }));
-      channel.send(JSON.stringify({
+      events.send(JSON.stringify({
         type: "response.create",
-        response: { output_modalities: ["audio"], max_output_tokens: 96 },
+        response: { output_modalities: ["audio"] },
       }));
     };
-    channel.onmessage = (event) => {
+    events.onmessage = (event) => {
+      if (signal.aborted) return;
       let message;
       try { message = JSON.parse(event.data); } catch { return; }
       if (message.type === "response.output_audio_transcript.delta" && typeof message.delta === "string") {
@@ -119,24 +153,25 @@ async function startSession() {
       }
     };
 
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
     const callResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
       method: "POST",
       headers: { Authorization: `Bearer ${ephemeralKey}`, "Content-Type": "application/sdp" },
       body: offer.sdp,
       cache: "no-store",
+      signal,
     });
-    ephemeralKey = "";
+    signal.throwIfAborted();
     if (!callResponse.ok) throw new Error("OpenAI could not start the voice session.");
-    await peer.setRemoteDescription({ type: "answer", sdp: await callResponse.text() });
-    sessionTimer = window.setTimeout(() => stopSession("Session ended after 10 minutes."), 10 * 60 * 1000);
+    const answer = await callResponse.text();
+    signal.throwIfAborted();
     setStatus("Connecting to Mira…");
+    await connection.setRemoteDescription({ type: "answer", sdp: answer });
+    signal.throwIfAborted();
+    sessionTimer = window.setTimeout(() => stopSession("Session ended after 10 minutes."), 10 * 60 * 1000);
   } catch (error) {
-    ownerToken = "";
-    ephemeralKey = "";
+    if (signal.aborted) return;
     stopSession("Disconnected");
-    showError(error instanceof Error ? error.message : "Mira could not start the voice session.");
+    transcriptBox.textContent = error instanceof Error ? error.message : "Mira could not start the voice session.";
   }
 }
 

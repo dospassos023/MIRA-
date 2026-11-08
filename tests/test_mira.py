@@ -270,15 +270,52 @@ def test_mira_identity_is_stable_for_text_and_voice_bootstrap_without_provider(t
         assert reply.status_code == 200
         assert reply.json()["text"].startswith("I’m Mira,")
         assert reply.json()["usage"] == {"input_tokens": 0, "output_tokens": 0}
+        reply = client.post("/v1/respond", headers=OWNER,
+                            json={**payload(), "prompt": "Who are you?"})
+        assert reply.status_code == 200
+        assert reply.json()["text"] == text["introduction"]
+        assert reply.json()["usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+
+def test_direct_identity_preserves_the_operation_gate_and_other_questions(tmp_path):
+    stub = Stub()
+    settings = Settings("a" * 32, tmp_path / "db", provider="openai",
+                        model="test", openai_key="fake")
+    with TestClient(create_app(settings, provider=stub)) as client:
+        blocked = client.post("/v1/respond", headers=OWNER,
+                              json={**payload("publish"), "prompt": "Who are you?"})
+        assert blocked.status_code == 403
+        for endpoint, request in (
+            ("/v1/respond", {**payload(), "prompt": "What's your name?"}),
+            ("/v1/chat", {"message": "Who are you?"}),
+        ):
+            reply = client.post(endpoint, headers=OWNER, json=request)
+            assert reply.status_code == 200
+            assert reply.json()["text"].startswith("I’m Mira,")
+            assert "powered by OpenAI" in reply.json()["text"]
+        assert not stub.calls
+        for message in ("Who am I?", 'Translate "Who are you?" into Portuguese'):
+            reply = client.post("/v1/chat", headers=OWNER, json={"message": message})
+            assert reply.json()["text"] == "Synthetic reply"
+        assert len(stub.calls) == 2
 
 
 def test_chat_passes_identity_contract_to_model(tmp_path):
     stub = Stub()
     settings = Settings("a" * 32, tmp_path / "db", provider="ollama", model="test")
     with TestClient(create_app(settings, provider=stub)) as client:
-        assert client.post("/v1/chat", headers=OWNER,
-                           json={"message": "Let's plan my week"}).status_code == 200
-    identity = json.loads(stub.calls[0][0])["identity_profile"]
+        first = client.post("/v1/chat", headers=OWNER, json={"message": "Let's plan my week"})
+        assert first.status_code == 200
+        assert client.post("/v1/chat", headers=OWNER, json={
+            "message": "Start with Monday", "session_id": first.json()["session_id"]
+        }).status_code == 200
+        assert client.post("/v1/chat", headers=OWNER, json={
+            "message": "Help me with another project"
+        }).status_code == 200
+    identities = [json.loads(system)["identity_profile"] for system, _prompt in stub.calls]
+    assert len(identities) == 3
+    identity = identities[0]
+    assert all(profile == identity for profile in identities)
     assert identity["persona"]["identity"].startswith("playful intellectual")
     assert len(identity["persona"]["principles"]) == 5
     assert identity["personality"]["parameters"]["academic_collaboration"] == 0.9
@@ -301,6 +338,8 @@ def test_realtime_voice_credentials_are_owner_only_and_never_expose_api_key(tmp_
         assert session["max_output_tokens"] == 256
         assert session["tool_choice"] == "none" and session["tools"] == []
         assert "not a temporary nickname" in session["instructions"]
+        assert "Who are you?" in session["instructions"]
+        assert "I’m Mira, your AI research and executive collaborator, powered by OpenAI." in session["instructions"]
         assert "fictional_age" in session["instructions"]
         assert "Challenge claims" in session["instructions"]
         return httpx.Response(200, json={"value": "ek_synthetic", "expires_at": 2_000_000_000})
@@ -365,7 +404,9 @@ def test_dedicated_voice_page_is_local_and_does_not_persist_credentials_or_trans
         assert page.status_code == 200
         assert script.status_code == 200
         assert "Start Mira voice" in page.text
-        assert "cache-control" not in page.headers or page.headers["cache-control"] == "no-store"
+        assert page.headers["cache-control"] == "no-store"
+        assert "connect-src 'self' https://api.openai.com" in page.headers["Content-Security-Policy"]
+        assert "Content-Security-Policy" not in client.get("/docs").headers
         assert "localStorage" not in script.text
         assert "sessionStorage" not in script.text
         assert "10 * 60 * 1000" in script.text

@@ -16,7 +16,7 @@ from .executive import ApprovalRequest, Executive, TaskRequest, Tool
 from .memory import Conflict, Memory
 from .identity import IDENTITY, asks_identity, introduction, realtime_instructions
 from .policy import PERSONALITY, PERSONA, authorized, baseline, identity_profile
-from .providers import Provider, ProviderError, RealtimeProvider
+from .providers import Completion, Provider, ProviderError, RealtimeProvider
 from .schemas import Action, Context, Key, MemoryInput, Observation, Operation, ProfileImport, Review, Schema, Value
 
 
@@ -64,11 +64,6 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "connect-src 'self' https://api.openai.com; media-src 'self' blob:; "
-            "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-        )
         return response
 
     @app.exception_handler(RequestValidationError)
@@ -156,7 +151,14 @@ def create_app(
         """A local dedicated Mira voice UI; activation is explicitly opt-in."""
         from importlib.resources import files
 
-        return HTMLResponse(files("mira").joinpath("voice.html").read_text(encoding="utf-8"))
+        return HTMLResponse(
+            files("mira").joinpath("voice.html").read_text(encoding="utf-8"),
+            headers={"Content-Security-Policy": (
+                "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "connect-src 'self' https://api.openai.com; media-src 'self' blob:; "
+                "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            )},
+        )
 
     @app.get("/voice.js", include_in_schema=False)
     def voice_script():
@@ -172,9 +174,7 @@ def create_app(
         """Mint a 60-second Realtime credential for the owner-operated voice page."""
         if not settings.realtime_enabled or not settings.openai_key:
             raise HTTPException(503, "Dedicated voice is disabled or not configured")
-        instructions = realtime_instructions(
-            identity_profile(), introduction("openai")
-        )
+        instructions = realtime_instructions(identity_profile())
         try:
             secret = await RealtimeProvider(
                 settings.openai_key, settings.realtime_model, settings.realtime_voice
@@ -200,8 +200,6 @@ def create_app(
             raise HTTPException(403, "Operation requires explicit authorization")
         if settings.provider == "openai" and caller != "owner":
             raise HTTPException(403, "Remote provider requires owner access")
-        if provider is None:
-            raise HTTPException(503, "No model provider configured")
         context = body.context
         if caller == "owner" and settings.provider == "ollama" and context.preferred_style is None:
             try:
@@ -212,15 +210,20 @@ def create_app(
                 if not preference["sensitive"] and preference["value"] in {"concise", "standard", "detailed"}:
                     context = context.model_copy(update={"preferred_style": preference["value"]})
         decision = baseline(context)
-        system = json.dumps({
-            "identity_contract": IDENTITY,
-            "identity_profile": identity_profile(), "decision": decision.model_dump(),
-            "context": context.model_dump(exclude_none=True),
-        })
-        try:
-            result = await provider.complete(system, body.prompt)
-        except ProviderError:
-            raise HTTPException(502, "Model provider request failed") from None
+        if asks_identity(body.prompt):
+            result = Completion(introduction(settings.provider), 0, 0)
+        else:
+            if provider is None:
+                raise HTTPException(503, "No model provider configured")
+            system = json.dumps({
+                "identity_contract": IDENTITY,
+                "identity_profile": identity_profile(), "decision": decision.model_dump(),
+                "context": context.model_dump(exclude_none=True),
+            })
+            try:
+                result = await provider.complete(system, body.prompt)
+            except ProviderError:
+                raise HTTPException(502, "Model provider request failed") from None
         return {
             "text": result.text, "policy": decision, "personality_version": PERSONALITY.version,
             "usage": {"input_tokens": result.input_tokens, "output_tokens": result.output_tokens},
@@ -240,7 +243,6 @@ def create_app(
                 raise HTTPException(404, "Conversation not found") from None
         else:
             history = []
-        memories = await run_in_threadpool(sessions.retrieve, body.message)
         decision = baseline(body.context)
         if asks_identity(body.message):
             result_text = introduction(settings.provider)
@@ -254,6 +256,7 @@ def create_app(
                     "usage": {"input_tokens": 0, "output_tokens": 0}}
         if provider is None:
             raise HTTPException(503, "No model provider configured")
+        memories = await run_in_threadpool(sessions.retrieve, body.message)
         plan = cognitive.plan(body.message, [Step(description="Answer the user using available evidence")], body.context)
         system = json.dumps({
             "identity_contract": IDENTITY,

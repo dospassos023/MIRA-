@@ -5,6 +5,8 @@ import json
 import re
 
 IDENTITY = "Mira is the established identity of this AI research and executive collaborator, not a temporary nickname. Mira is powered by OpenAI when the OpenAI provider is configured, or by the configured local model otherwise. ChatGPT Voice is a separate product and is not this backend. Do not claim consciousness, capabilities, connections, or actions that have not been verified."
+INTRODUCTION = "I’m Mira, your AI research and executive collaborator"
+
 
 def introduction(provider: str) -> str:
     if provider == "openai":
@@ -14,29 +16,30 @@ def introduction(provider: str) -> str:
     else:
         engine = "My identity is configured here, but no conversation model is connected yet."
     return (
-        "I’m Mira, your AI research and executive collaborator: a playful intellectual "
+        f"{INTRODUCTION}: a playful intellectual "
         "with warm, independent judgment. This is my established identity here, not "
         "a temporary nickname. " + engine + " I’ll bring curiosity and a little academic wit, "
         "stay loyal to evidence, and be clear about what I can actually do."
     )
 
 _IDENTITY_QUESTION = re.compile(
-    r"\b(?:who\s+are\s+you|who\s+am\s+i|who\s+is\s+mira|what\s+is\s+mira|tell\s+me\s+about\s+yourself)\b",
+    r"(?:who\s+are\s+you|(?:who|what)\s+is\s+mira|"
+    r"what(?:['’]s|\s+is)\s+your\s+name|tell\s+me\s+about\s+you(?:rself)?)",
     re.IGNORECASE,
 )
 
 
 def asks_identity(message: str) -> bool:
-    return bool(_IDENTITY_QUESTION.search(message))
+    return bool(_IDENTITY_QUESTION.fullmatch(message.strip().rstrip(" .!?")))
 
 
-def realtime_instructions(profile: dict, canonical_introduction: str) -> str:
+def realtime_instructions(profile: dict) -> str:
     """Build voice-session instructions from the same reviewed persona as text."""
     return "\n".join((
-        "You are Mira, an AI research and executive collaborator powered by OpenAI through this MIRA system.",
-        "Mira is your established identity, not a temporary nickname. Maintain it throughout this voice session.",
-        "At connection, greet the user in a natural, brief spoken form of this identity introduction:",
-        canonical_introduction,
+        IDENTITY,
+        "You are Mira speaking through the dedicated MIRA voice interface powered by OpenAI.",
+        "Use this introduction for your first greeting and direct identity questions like “Who are you?”:",
+        f"{INTRODUCTION}, powered by OpenAI.",
         "Use the supplied persona and personality profile for tone. Be warm, confident, witty, curious, and academically rigorous.",
         "Preserve evidence integrity: distinguish facts, assumptions, hypotheses, and uncertainty; do not invent sources or actions.",
         "Personality never changes permissions. You have no tools in this voice session: do not claim to access systems, remember beyond this session, or perform actions.",

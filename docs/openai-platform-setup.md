@@ -10,21 +10,23 @@ As of November 8, 2026, the official Standard API rate card lists `gpt-6-luna` a
 
 For low-latency voice, `gpt-realtime-2.1-mini` is listed at $10 per million input audio tokens and $20 per million output audio tokens. OpenAI estimates one input audio token per 100 ms and one output audio token per 50 ms. If a 10-minute daily conversation is split evenly between user speech and Mira speech for 30 days, the simple audio-only estimate is about $4.50/month, plus text/context usage. Silence is filtered by voice activity detection; long sessions can cost more as prior context is reused. See [Realtime pricing and cost guidance](https://developers.openai.com/api/docs/pricing) and [Realtime cost optimization](https://developers.openai.com/api/docs/guides/voice-latency-cost?voice-api=realtime).
 
-The voice page caps each model response at 256 tokens and disconnects its own session after 10 minutes. Those are app-side safeguards, not an account-wide spend cap. Set a small Platform budget and alerts and check actual usage in the dashboard. Budget enforcement can lag; do not treat an alert or budget as a guaranteed exact ceiling.
+The voice page requests a 256-token response ceiling and closes the connection after 10 minutes. For a monthly cap on this project's API traffic, enable the Platform's hard spend limit. Alerts send notifications while traffic continues. The hard limit can take time to apply, so actual spend can be slightly higher. [OpenAI spend limits](https://developers.openai.com/api/docs/guides/spend-limits)
 
 ## Safe activation
 
-1. In the existing **M.I.R.A.** project, review **Billing → Overview → Usage limits** and **Usage**. Do not add credits or payment details unless you choose to fund the pilot.
-2. If you decide to proceed, create a project-scoped API key in **M.I.R.A. → API Keys**. Store it in your local secret manager and inject it into the MIRA process as `OPENAI_API_KEY`. Never send the key in chat, add it to Git, or put it in screenshots.
-3. Keep text-model use disabled unless separately configured. Dedicated voice is opt-in with `MIRA_REALTIME_ENABLED=true`; the default is off. The suggested model is `gpt-realtime-2.1-mini` and voice is `marin`.
-4. Start MIRA bound to `127.0.0.1`, then open `http://127.0.0.1:8765/voice`. Enter the local MIRA owner token in the page and press **Start Mira voice**. The user action starts a billable voice session. The browser receives a 60-second ephemeral Realtime credential; the long-lived API key stays on the server. The page does not save transcripts and shows session token usage; reconcile dollars in OpenAI Usage.
+1. Select the existing **M.I.R.A.** project and open **Settings → Limits**. If you see **Spend**, choose **Edit spend limit**, set your monthly amount, turn on **Enforce a hard limit**, and save. The supplied screenshot only shows model and rate controls. If **Spend** is absent, check **Organization settings → Billing → Overview → Usage limits** for the controls your account has. An organization cap applies to all its projects. [OpenAI spend limits](https://developers.openai.com/api/docs/guides/spend-limits)
+2. In project **Settings → General**, keep **Standard** as the default tier. Under **Limits → Model usage**, allow the models you plan to use, such as `gpt-6-luna` for text and `gpt-realtime-2.1-mini` for voice, if listed. Add spend alerts to catch usage before the cap.
+3. If you choose to fund the pilot, use **Organization settings → Billing → Overview** to review the credit purchase. In **M.I.R.A. → API Keys**, create a key scoped to this project. Use your local secret manager to supply it to the MIRA process as `OPENAI_API_KEY`. Keep it out of chat, source control, and screenshots. [OpenAI API keys](https://developers.openai.com/api/docs/guides/api-keys)
+4. For text, set `MIRA_PROVIDER=openai` and `MIRA_MODEL=gpt-6-luna`. For voice, set `MIRA_REALTIME_ENABLED=true`. The voice defaults are `gpt-realtime-2.1-mini` and `marin`. Both OpenAI paths are off by default.
+5. Start MIRA bound to `127.0.0.1`, then open `http://127.0.0.1:8765/voice`. Enter the local MIRA owner token and press **Start Mira voice** when ready for billable use. The browser receives a temporary Realtime credential. The API key stays on the server.
+6. In the Platform **Usage** dashboard, filter to **M.I.R.A.** and compare billed usage with the browser's session token count.
 
 An API key alone does not create billing credits. The `OPENAI_API_KEY` value must come from a secret manager or process environment. MIRA does not load `.env` files automatically.
 
 ## Current implementation and boundaries
 
 - `/v1/identity?channel=text|voice` returns the same reviewed persona and identity contract without a model call.
-- `/v1/chat` answers identity questions deterministically as Mira before a text model is configured; ordinary turns include the persona and personality on every model request.
+- Both text endpoints answer direct identity questions as Mira without a model call. Ordinary turns include the persona and personality on every model request.
 - `/voice` is a dedicated local browser voice interface. Its Realtime session receives the same persona/personality, a fixed startup identity greeting instruction, no tools, and a 256-token per-response ceiling. The browser microphone and WebRTC session have not been exercised against a paid API account.
 - The owner-authenticated secret endpoint is disabled by default. It returns only an ephemeral credential, model, voice, and expiry; it redacts provider errors.
 - Voice transcripts are displayed in page memory only. Session token counts are not a persistent usage ledger; use the Platform Usage dashboard for billing reconciliation.
@@ -33,4 +35,4 @@ An API key alone does not create billing credits. The `OPENAI_API_KEY` value mus
 
 ## Local verification
 
-The API tests use a mock HTTP transport. They verify authorization, request shape, identity/personality instructions, secret redaction, and the disabled-by-default setting without contacting OpenAI. Passing these tests does not verify microphone permissions, OpenAI account access, model availability for your project, billed audio quality, or actual Realtime behavior.
+The Python suite uses a mock HTTP transport to verify authorization, request shape, identity instructions, secret redaction, and the disabled-by-default setting. Run `node --test tests/voice.test.mjs` to test greeting requests and cancellation with simulated microphone and network responses. A live check still needs microphone permission, project access, and an approved API test.
